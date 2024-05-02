@@ -1,0 +1,208 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta http-equiv="X-UA-Compatible" content="IE=edge">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>GLTF Viewer</title>
+  <link rel="shortcut icon" href="#">
+</head>
+<body>
+  <canvas id="canvas" width="640" height="480"></canvas>
+
+  <script id="shader-vs" type="x-shader/x-vertex">
+    attribute vec3 a_Position;
+    attribute vec3 a_Normal;
+    
+    uniform mat4 u_PMatrix;
+    uniform mat4 u_MVMatrix;
+    uniform mat4 u_NMatrix;
+
+    uniform vec3 u_AmbientColor;
+    uniform vec3 u_DirectionalColor;
+    uniform vec3 u_SpecularColor;
+    uniform vec3 u_LightingPos;
+
+    uniform vec3 u_MaterialAmbientColor;
+    uniform vec3 u_MaterialDiffuseColor;
+    uniform vec3 u_MaterialSpecularColor;
+
+    varying vec3 v_Color;
+
+    void main(void) {
+      float specular = 0.0;
+
+      vec4 vertexPos4 =  u_MVMatrix * vec4(a_Position, 1.0);
+      vec3 vertexPos = vertexPos4.xyz;
+      vec3 eye = normalize(-vertexPos);
+
+      vec3 transformedNormal = vec3(u_NMatrix * vec4(a_Normal, 1.0));
+      vec3 normal = normalize(transformedNormal);
+
+      vec3 lightDir = normalize(u_LightingPos);
+      float lambertTerm = max(dot(normal, -lightDir), 0.0);
+
+      if (lambertTerm > 0.0) {
+          vec3 halfDir = normalize(-lightDir + eye);
+          float specAngle = max(dot(halfDir, normal), 0.0);
+          specular = pow(specAngle, 16.0);
+      }
+
+      v_Color = u_AmbientColor * u_MaterialAmbientColor 
+        + u_DirectionalColor * u_MaterialDiffuseColor * lambertTerm 
+        + u_SpecularColor * u_MaterialSpecularColor * specular;
+
+      gl_Position = u_PMatrix * vertexPos4;
+    }
+  </script>
+
+  <script id="shader-fs" type="x-shader/x-fragment">
+    precision mediump float;
+    varying vec3 v_Color;
+
+    void main(void) {
+      gl_FragColor = vec4(v_Color, 1.0);
+    }
+  </script>
+
+  <script src="gl-matrix.js"></script> 
+  <script src="gl-utils.js"></script>
+
+  <script>
+    // GLTF -> Scene -> SceneRenderer
+
+    const gltf = {
+      Scene: class {
+        constructor(data) {
+          this.data = data;
+        }
+
+        getNodes() {
+          const nodes = gltf.getNodes(this.data);
+          for (const node of nodes) {
+            if (parent = gltf.findParentNode(node, nodes)) {
+              node.parent = parent;
+            }
+          }
+
+          return nodes;
+        }
+      },
+
+      Node: class {
+        parent = null;
+
+        constructor({ name, mesh, children,
+          translation, rotation, scale }) 
+        {
+          this.name = name;
+          this.mesh = mesh;
+          this.children = children ?? [];
+          this.translation = translation ?? [0, 0, 0];
+          this.rotation = rotation ?? [0, 0, 0, 1];
+          this.scale = scale ?? [1, 1, 1];
+        }
+
+        getMatrix(mat) {
+          const matrix = calcMatrix(mat, this);
+          if (this.parent) {
+            const pMatrix = this.parent.getMatrix(mat);
+            mat.mul(matrix, pMatrix, matrix);
+          }
+          
+          return matrix;
+        }
+      },
+
+      MeshProvider: class {
+        constructor({ accessors, bufferViews, buffers }) {
+          this.accessors = accessors;
+          this.bufferViews = bufferViews;
+          this.buffers = buffers; 
+        }
+
+        getMesh({ name, primitives: prims }) {
+          const primitives = prims.map(p => this.getMeshPrimitive(p));
+          return { name, primitives };
+        }
+        
+        getMeshPrimitive({ attributes: a, indices: i }) {
+          const attributes = Object.entries(a)
+            .reduce((attr, [key, value]) => {
+              attr[key] = this.getAccessor(this.accessors[value]);
+              return attr;
+            }, {});
+            
+          const indices = this.getAccessor(this.accessors[i]);
+
+          return { attributes, indices };
+        }
+        
+        getAccessor({ bufferView: bv, ...rest }) {
+          const bufferView = this.getBufferView(this.bufferViews[bv]);
+          return { ...rest, bufferView };
+        }
+        
+        getBufferView({ buffer, byteOffset, byteLength, target }) {
+          const data = new Uint8Array(
+            this.buffers[buffer], byteOffset, byteLength);
+
+          return { target, data };
+        }
+      }, 
+
+      getNodes(data) {
+        const meshes = gltf.getMeshes(data);
+        return data.nodes.map(node => {
+          const n = { ...node, mesh: meshes[node.mesh] };
+          return new gltf.Node(n); 
+        });
+      },
+
+      getMeshes(data) {
+        const meshProvider = new gltf.MeshProvider(data);
+        return data.meshes.map(mesh => meshProvider.getMesh(mesh));
+      },
+
+      findParentNode(node, nodes) {
+        const index = nodes.findIndex(n => n.name === node.name);
+        return nodes.find(n => n.children.includes(index));
+      },
+
+      loadScene(path, cb) {
+        fetch(getURL(path)).then(res => res.json())
+          .then(data => {
+            const { uri } = data.buffers[0];
+            fetch(getURL(path, uri)).then(res => res.arrayBuffer())
+              .then(buffer => {
+                data.buffers[0] = buffer;
+                cb && cb(new gltf.Scene(data));
+              });
+          });
+      },
+    };
+
+    gltf.loadScene('assets/tank', scene => {
+      for (const node of scene.getNodes()) {
+        console.log(node);
+      }
+    });
+
+    function calcMatrix(mat, { translation, rotation, scale }) {
+      const matrix = mat.create();
+      mat.fromRotationTranslationScale(matrix, 
+        rotation, translation, scale);
+      return matrix;
+    }
+
+    function getURL(path, file = getFile(path)) {
+      return `${path}/${file}`;
+    }
+
+    function getFile(path) {
+      return path.split('/').pop() + '.gltf';
+    }
+
+  </script>
+</body>
+</html>
