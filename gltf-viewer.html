@@ -118,10 +118,9 @@
         getMatrix(mat) {
           const matrix = mathUtils.calcMatrix(mat, this);
           if (this.parent) {
-            const pMatrix = this.parent.getMatrix(mat);
-            mat.mul(matrix, pMatrix, matrix);
+            mat.mul(matrix, this.parent.getMatrix(mat), matrix);
           }
-          
+
           return matrix;
         }
       },
@@ -144,7 +143,6 @@
               attr[key] = this.getAccessor(this.accessors[value]);
               return attr;
             }, {});
-            
           const indices = this.getAccessor(this.accessors[i]);
 
           return { attributes, indices };
@@ -156,8 +154,8 @@
         }
         
         getBufferView({ buffer, byteOffset, byteLength, target }) {
-          const data = new Uint8Array(
-            this.buffers[buffer], byteOffset, byteLength);
+          const data = new Uint8Array(this.buffers[buffer], 
+            byteOffset, byteLength);
 
           return { target, data };
         }
@@ -183,6 +181,63 @@
           : undefined;
       },
     };
+
+    {
+      // const renderObj = {
+      //   matrix: [],
+      //   primitives: [
+      //     {
+      //       attrs: {
+      //         [a_Position]: { buffer, componentType, numComponents },
+      //         [a_Normal]: { buffer, componentType, numComponents },
+      //       },
+      //       indicesInfo: { buffer, componentType, count },
+      //     },
+      //   ],
+      // };
+
+      function getRenderObject(nodes, renderer) {
+        return nodes.map(node => {
+          const primitives = getRenderPrimitives(node.mesh, renderer);
+          const matrix = node.getMatrix(glMatrix.mat4);
+          return { primitives, matrix };
+        });
+      }
+
+      function getRenderPrimitives(mesh, { glu, program }) {
+        const { a_Position, a_Normal } = program;
+
+        return mesh.primitives.map(prim => {
+          const attrs = {
+            [a_Position]: fn(glu, prim.attributes['POSITION']),
+            [a_Normal]: fn(glu, prim.attributes['NORMAL']),
+          };
+          const indicesInfo = fn(glu, prim.indices);
+
+          return { attrs, indicesInfo };
+        });
+      }
+
+      function fn(glu, attr) {
+        throw new Error('Not implemented');
+      }
+
+      // function render(gl) {
+      //   gl.uniformMatrix4fv(u_MVMatrix, false, mvMatrix);
+      //   gl.uniformMatrix4fv(u_NMatrix, false, nMatrix);
+
+      //   gl.bindBuffer(gl.ARRAY_BUFFER, vbo);
+      //   gl.enableVertexAttribArray(a_Position);
+      //   gl.vertexAttribPointer(a_Position, 3, gl.FLOAT, false, 0, 0);
+
+      //   gl.bindBuffer(gl.ARRAY_BUFFER, nbo);
+      //   gl.enableVertexAttribArray(a_Normal);
+      //   gl.vertexAttribPointer(a_Normal, 3, gl.FLOAT, false, 0, 0);
+
+      //   gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER, ibo);
+      //   gl.drawElements(gl.TRIANGLES, indices.length, gl.UNSIGNED_SHORT, 0);
+      // }
+    }
 
     loadScene('assets/tank', scene => {
       const nodes = scene.getNodes();
