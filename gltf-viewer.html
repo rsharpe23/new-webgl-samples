@@ -65,12 +65,11 @@
     }
   </script>
 
-  <script src="gl-matrix.js"></script> 
-  <script src="gl-utils.js"></script>
+  <script src="js/gl-matrix.js"></script> 
+  <script src="js/gl-utils.js"></script>
+  <script src="js/math-utils.js"></script>
 
   <script>
-    // GLTF -> Scene -> SceneRenderer
-
     const gltf = {
       Scene: class {
         constructor(data) {
@@ -80,8 +79,8 @@
         getNodes() {
           const nodes = gltf.getNodes(this.data);
           for (const node of nodes) {
-            if (parent = gltf.findParentNode(node, nodes)) {
-              node.parent = parent;
+            if (parent = gltf.findParent(node, this.data)) {
+              node.parent = nodes.find(n => n.name === parent.name);
             }
           }
 
@@ -90,21 +89,34 @@
       },
 
       Node: class {
-        parent = null;
+        _parent = null;
 
-        constructor({ name, mesh, children,
-          translation, rotation, scale }) 
-        {
+        constructor({ name, mesh, translation, rotation, scale }) {
           this.name = name;
           this.mesh = mesh;
-          this.children = children ?? [];
           this.translation = translation ?? [0, 0, 0];
           this.rotation = rotation ?? [0, 0, 0, 1];
           this.scale = scale ?? [1, 1, 1];
         }
 
+        get parent() {
+          return this._parent;
+        }
+
+        set parent(value) {
+          if (value == this) {
+            throw new Error("Can't be my own parent");
+          }
+
+          if (value?.parent == this) {
+            value.parent = null;
+          }
+
+          this._parent = value;
+        }
+
         getMatrix(mat) {
-          const matrix = calcMatrix(mat, this);
+          const matrix = mathUtils.calcMatrix(mat, this);
           if (this.parent) {
             const pMatrix = this.parent.getMatrix(mat);
             mat.mul(matrix, pMatrix, matrix);
@@ -164,35 +176,29 @@
         return data.meshes.map(mesh => meshProvider.getMesh(mesh));
       },
 
-      findParentNode(node, nodes) {
+      findParent(node, { nodes }) {
         const index = nodes.findIndex(n => n.name === node.name);
-        return nodes.find(n => n.children.includes(index));
-      },
-
-      loadScene(path, cb) {
-        fetch(getURL(path)).then(res => res.json())
-          .then(data => {
-            const { uri } = data.buffers[0];
-            fetch(getURL(path, uri)).then(res => res.arrayBuffer())
-              .then(buffer => {
-                data.buffers[0] = buffer;
-                cb && cb(new gltf.Scene(data));
-              });
-          });
+        return ~index 
+          ? nodes.find(n => n.children && n.children.includes(index)) 
+          : undefined;
       },
     };
 
-    gltf.loadScene('assets/tank', scene => {
-      for (const node of scene.getNodes()) {
-        console.log(node);
-      }
+    loadScene('assets/tank', scene => {
+      const nodes = scene.getNodes();
+      console.log(nodes);
     });
 
-    function calcMatrix(mat, { translation, rotation, scale }) {
-      const matrix = mat.create();
-      mat.fromRotationTranslationScale(matrix, 
-        rotation, translation, scale);
-      return matrix;
+    function loadScene(path, cb) {
+      fetch(getURL(path)).then(res => res.json())
+        .then(data => {
+          const { uri } = data.buffers[0];
+          fetch(getURL(path, uri)).then(res => res.arrayBuffer())
+            .then(buffer => {
+              data.buffers[0] = buffer;
+              cb && cb(new gltf.Scene(data));
+            });
+        });
     }
 
     function getURL(path, file = getFile(path)) {
@@ -202,7 +208,6 @@
     function getFile(path) {
       return path.split('/').pop() + '.gltf';
     }
-
   </script>
 </body>
 </html>
