@@ -67,7 +67,7 @@
 
   <script src="js/gl-matrix.js"></script> 
   <script src="js/gl-utils.js"></script>
-  <script src="js/math-utils.js"></script>
+  <script src="js/utils.js"></script>
 
   <script>
     const gltf = {
@@ -116,9 +116,10 @@
         }
 
         getMatrix(mat) {
-          const matrix = mathUtils.calcMatrix(mat, this);
+          const matrix = utils.calcMatrix(mat, this);
           if (this.parent) {
-            mat.mul(matrix, this.parent.getMatrix(mat), matrix);
+            const worldMatrix = this.parent.getMatrix(mat);
+            mat.mul(matrix, worldMatrix, matrix);
           }
 
           return matrix;
@@ -136,7 +137,7 @@
           const primitives = prims.map(p => this.getMeshPrimitive(p));
           return { name, primitives };
         }
-        
+
         getMeshPrimitive({ attributes: a, indices: i }) {
           const attributes = Object.entries(a)
             .reduce((attr, [key, value]) => {
@@ -162,16 +163,15 @@
       }, 
 
       getNodes(data) {
-        const meshes = gltf.getMeshes(data);
+        const meshes = gltf.getMeshes(data, new gltf.MeshProvider(data));
         return data.nodes.map(node => {
           const n = { ...node, mesh: meshes[node.mesh] };
           return new gltf.Node(n); 
         });
       },
 
-      getMeshes(data) {
-        const meshProvider = new gltf.MeshProvider(data);
-        return data.meshes.map(mesh => meshProvider.getMesh(mesh));
+      getMeshes({ meshes }, meshProvider) {
+        return meshes.map(mesh => meshProvider.getMesh(mesh));
       },
 
       findParent(node, { nodes }) {
@@ -182,67 +182,137 @@
       },
     };
 
-    {
-      // const renderObj = {
-      //   matrix: [],
-      //   primitives: [
-      //     {
-      //       attrs: {
-      //         [a_Position]: { buffer, componentType, numComponents },
-      //         [a_Normal]: { buffer, componentType, numComponents },
-      //       },
-      //       indicesInfo: { buffer, componentType, count },
-      //     },
-      //   ],
-      // };
-
-      function getRenderObject(nodes, renderer) {
-        return nodes.map(node => {
-          const primitives = getRenderPrimitives(node.mesh, renderer);
-          const matrix = node.getMatrix(glMatrix.mat4);
-          return { primitives, matrix };
-        });
+    class MeshProvider {
+      constructor(gl, program) {
+        this.gl = gl;
+        this.program = program;
       }
 
-      function getRenderPrimitives(mesh, { glu, program }) {
-        const { a_Position, a_Normal } = program;
-
-        return mesh.primitives.map(prim => {
+      getMesh({ primitives }) {
+        const { a_Position, a_Normal } = this.program;
+        return primitives.map(({ attributes, indices }) => {
           const attrs = {
-            [a_Position]: fn(glu, prim.attributes['POSITION']),
-            [a_Normal]: fn(glu, prim.attributes['NORMAL']),
+            [a_Position]: this.getBuffer(attributes['POSITION']),
+            [a_Normal]: this.getBuffer(attributes['NORMAL']),
           };
-          const indicesInfo = fn(glu, prim.indices);
+          const indicesInfo = this.getBuffer(indices);
 
           return { attrs, indicesInfo };
         });
       }
 
-      function fn(glu, attr) {
-        throw new Error('Not implemented');
+      getBuffer({ bufferView, type, ...rest }) {
+        const buffer = createBuffer(this.gl, bufferView);
+        const componentsPerAttr = utils.getNumComponentsOf(type);
+        return { ...rest, buffer, componentsPerAttr };
       }
-
-      // function render(gl) {
-      //   gl.uniformMatrix4fv(u_MVMatrix, false, mvMatrix);
-      //   gl.uniformMatrix4fv(u_NMatrix, false, nMatrix);
-
-      //   gl.bindBuffer(gl.ARRAY_BUFFER, vbo);
-      //   gl.enableVertexAttribArray(a_Position);
-      //   gl.vertexAttribPointer(a_Position, 3, gl.FLOAT, false, 0, 0);
-
-      //   gl.bindBuffer(gl.ARRAY_BUFFER, nbo);
-      //   gl.enableVertexAttribArray(a_Normal);
-      //   gl.vertexAttribPointer(a_Normal, 3, gl.FLOAT, false, 0, 0);
-
-      //   gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER, ibo);
-      //   gl.drawElements(gl.TRIANGLES, indices.length, gl.UNSIGNED_SHORT, 0);
-      // }
     }
 
-    loadScene('assets/tank', scene => {
-      const nodes = scene.getNodes();
-      console.log(nodes);
-    });
+    loadScene('assets/tank', render);
+
+    function render(scene) {
+      const canvas = document.getElementById('canvas');
+      const gl = canvas.getContext('webgl');
+
+      const program = getProgram(gl);
+      const renderObjects = getRenderObjects(
+        new MeshProvider(gl, program), scene.getNodes());
+
+      const { width, height } = canvas;
+      const { mat4 } = glMatrix;
+
+      const pMatrix = mat4.create();
+      const mvMatrix = mat4.create();
+      const invMvMatrix = mat4.create();
+      const nMatrix = mat4.create();
+
+      gl.clearColor(0.0, 0.0, 0.14, 1.0);
+      gl.enable(gl.DEPTH_TEST);
+      gl.useProgram(program);
+
+      (function tick(elapsedTime) {
+        gl.viewport(0, 0, width, height);
+        gl.clear(gl.COLOR_BUFFER_BIT | gl.DEPTH_BUFFER_BIT);
+
+        mat4.perspective(pMatrix, 1.04, width / height, 0.1, 1000.0);
+        gl.uniformMatrix4fv(program.u_PMatrix, false, pMatrix);
+
+        setLightUniforms(gl, program);
+        setMaterialUniforms(gl, program);
+
+        for (const { matrix, mesh } of renderObjects) {
+          // Предварительная трансформация
+          mat4.identity(mvMatrix);
+          mat4.translate(mvMatrix, mvMatrix, [0.0, -0.8, -10.0]);
+          mat4.rotateY(mvMatrix, mvMatrix, utils.degToRad(elapsedTime * 0.08));
+
+          mat4.mul(mvMatrix, mvMatrix, matrix);
+          gl.uniformMatrix4fv(program.u_MVMatrix, false, mvMatrix);
+
+          mat4.invert(invMvMatrix, mvMatrix);
+          mat4.transpose(nMatrix, invMvMatrix);
+          gl.uniformMatrix4fv(program.u_NMatrix, false, nMatrix);
+
+          for (const { attrs, indicesInfo } of mesh) {
+            for (const [attr, buffer] of Object.entries(attrs)) {
+              gl.bindBuffer(gl.ARRAY_BUFFER, buffer.buffer);
+              gl.enableVertexAttribArray(attr);
+              gl.vertexAttribPointer(attr, buffer.componentsPerAttr, 
+                buffer.componentType, false, 0, 0);
+            }
+
+            gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER, indicesInfo.buffer);
+            gl.drawElements(gl.TRIANGLES, indicesInfo.count, 
+              indicesInfo.componentType, 0);
+          }
+        }
+
+        requestAnimationFrame(tick);
+      })(0);
+    }
+
+    function getProgram(gl) {
+      const program = createProgram(gl);
+
+      program.a_Position = gl.getAttribLocation(program, "a_Position");
+      program.a_Normal = gl.getAttribLocation(program, "a_Normal");
+
+      program.u_PMatrix = gl.getUniformLocation(program, "u_PMatrix");
+      program.u_MVMatrix = gl.getUniformLocation(program, "u_MVMatrix");
+      program.u_NMatrix = gl.getUniformLocation(program, "u_NMatrix");
+
+      program.u_AmbientColor = gl.getUniformLocation(program, "u_AmbientColor");
+      program.u_DirectionalColor = gl.getUniformLocation(program, "u_DirectionalColor");
+      program.u_SpecularColor = gl.getUniformLocation(program, "u_SpecularColor");
+      program.u_LightingPos = gl.getUniformLocation(program, "u_LightingPos");
+
+      program.u_MaterialAmbientColor = gl.getUniformLocation(program, "u_MaterialAmbientColor");
+      program.u_MaterialDiffuseColor = gl.getUniformLocation(program, "u_MaterialDiffuseColor");
+      program.u_MaterialSpecularColor = gl.getUniformLocation(program, "u_MaterialSpecularColor");
+
+      return program;
+    }
+
+    function getRenderObjects(meshProvider, nodes) {
+      return nodes.map(node => {
+        const mesh = meshProvider.getMesh(node.mesh);
+        const matrix = node.getMatrix(glMatrix.mat4);
+        return { mesh, matrix };
+      });
+    }
+
+    function setMaterialUniforms(gl, program) {
+      gl.uniform3f(program.u_MaterialAmbientColor, 0.0, 0.0, 0.0);
+      gl.uniform3f(program.u_MaterialDiffuseColor, 0.2, 0.6, 0.4);
+      gl.uniform3f(program.u_MaterialSpecularColor, 0.8, 0.8, 0.8);
+    }
+
+    function setLightUniforms(gl, program) {
+      gl.uniform3f(program.u_AmbientColor, 0.4, 0.4, 0.4);
+      gl.uniform3f(program.u_DirectionalColor, 0.8, 0.8, 0.8);
+      gl.uniform3f(program.u_SpecularColor, 1.0, 1.0, 1.0);
+      gl.uniform3fv(program.u_LightingPos, [0.0, -7.0, -10.0]);
+    }
 
     function loadScene(path, cb) {
       fetch(getURL(path)).then(res => res.json())
