@@ -192,16 +192,16 @@
         const { a_Position, a_Normal } = this.program;
         return primitives.map(({ attributes, indices }) => {
           const attrs = {
-            [a_Position]: this.getBuffer(attributes['POSITION']),
-            [a_Normal]: this.getBuffer(attributes['NORMAL']),
+            [a_Position]: this.getBufferInfo(attributes['POSITION']),
+            [a_Normal]: this.getBufferInfo(attributes['NORMAL']),
           };
-          const indicesInfo = this.getBuffer(indices);
+          const indicesInfo = this.getBufferInfo(indices);
 
           return { attrs, indicesInfo };
         });
       }
 
-      getBuffer({ bufferView, type, ...rest }) {
+      getBufferInfo({ bufferView, type, ...rest }) {
         const buffer = createBuffer(this.gl, bufferView);
         const componentsPerAttr = utils.getNumComponentsOf(type);
         return { ...rest, buffer, componentsPerAttr };
@@ -254,11 +254,11 @@
           gl.uniformMatrix4fv(program.u_NMatrix, false, nMatrix);
 
           for (const { attrs, indicesInfo } of mesh) {
-            for (const [attr, buffer] of Object.entries(attrs)) {
-              gl.bindBuffer(gl.ARRAY_BUFFER, buffer.buffer);
+            for (const [attr, bufferInfo] of Object.entries(attrs)) {
+              gl.bindBuffer(gl.ARRAY_BUFFER, bufferInfo.buffer);
               gl.enableVertexAttribArray(attr);
-              gl.vertexAttribPointer(attr, buffer.componentsPerAttr, 
-                buffer.componentType, false, 0, 0);
+              gl.vertexAttribPointer(attr, bufferInfo.componentsPerAttr, 
+                bufferInfo.componentType, false, 0, 0);
             }
 
             gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER, indicesInfo.buffer);
